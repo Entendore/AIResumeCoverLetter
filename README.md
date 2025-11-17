@@ -1,9 +1,9 @@
 # AICoverLetterResume - Resume & Cover Letter Generator
 
-![Resume Example](resume.jpg)
-![Cover Letter Example](coverletter.jpg)
-![Templates](templates.jpg)
-![Upload Feature](upload.jpg)
+![Resume Example](images/resume.jpg)
+![Cover Letter Example](images/coverletter.jpg)
+![Templates](images/templates.jpg)
+![Upload Feature](images/upload.jpg)
 
 AICoverLetterResume is a powerful, locally-hosted application that leverages advanced AI models to help you create professional, ATS-optimized resumes and cover letters. With support for uploading existing documents, multiple templates, and comprehensive analytics, AICoverLetterResume streamlines your job application process.
 
