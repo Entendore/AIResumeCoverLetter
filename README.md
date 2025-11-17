@@ -1,9 +1,5 @@
 # AICoverLetterResume - Resume & Cover Letter Generator
 
-![Resume Example](images/resume.jpg)
-![Cover Letter Example](images/coverletter.jpg)
-![Templates](images/templates.jpg)
-![Upload Feature](images/upload.jpg)
 
 AICoverLetterResume is a powerful, locally-hosted application that leverages advanced AI models to help you create professional, ATS-optimized resumes and cover letters. With support for uploading existing documents, multiple templates, and comprehensive analytics, AICoverLetterResume streamlines your job application process.
 
@@ -56,6 +52,8 @@ AICoverLetterResume is a powerful, locally-hosted application that leverages adv
 4. Generate your resume with one click
 5. Export as a PDF or save to history
 
+![Resume Example](images/resume.jpg)
+
 ### Creating a New Cover Letter
 
 1. Enter company and position details in the "Cover Letter Generator" tab
@@ -63,6 +61,8 @@ AICoverLetterResume is a powerful, locally-hosted application that leverages adv
 3. Use the job analysis feature to extract key requirements
 4. Generate a personalized cover letter
 5. Further personalize and optimize as needed
+
+![Cover Letter Example](images/coverletter.jpg)
 
 ### Uploading Existing Documents
 
@@ -72,6 +72,8 @@ AICoverLetterResume is a powerful, locally-hosted application that leverages adv
 4. Use AI to improve and optimize your document
 5. Compare the before and after versions
 
+![Upload Feature](images/upload.jpg)
+
 ### Customizing Templates
 
 1. Select from four template styles in the "Templates & Export" tab
@@ -79,6 +81,7 @@ AICoverLetterResume is a powerful, locally-hosted application that leverages adv
 3. Generate documents with your preferred template
 4. Export as PDF with professional formatting
 
+![Templates](images/templates.jpg)
 
 ## Troubleshooting
 
