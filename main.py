@@ -18,9 +18,9 @@ import re
 from typing import Dict, List, Any, Optional, Tuple
 import plotly.graph_objects as go
 import plotly.express as px
-from PyPDF2 import PdfReader
-import docx
-import python_docx2txt
+from docx import Document
+import PyPDF2
+import io
 
 # Set page config for professional appearance
 st.set_page_config(
@@ -260,21 +260,35 @@ st.markdown("""
         border-color: #3b82f6;
         background-color: #eff6ff;
     }
+    .upload-success {
+        border-color: #22c55e;
+        background-color: #f0fdf4;
+    }
     .file-info {
-        background-color: #f0f9ff;
-        border: 1px solid #bae6fd;
-        border-radius: 8px;
+        background-color: #f1f5f9;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
         padding: 1rem;
         margin: 0.5rem 0;
     }
-    .extracted-content {
-        background-color: #f9fafb;
+    .comparison-container {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        margin: 1rem 0;
+    }
+    .comparison-box {
         border: 1px solid #e5e7eb;
         border-radius: 8px;
         padding: 1rem;
-        margin: 1rem 0;
-        max-height: 400px;
-        overflow-y: auto;
+        background-color: white;
+    }
+    .comparison-title {
+        font-weight: 600;
+        color: #1e3a8a;
+        margin-bottom: 0.5rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid #e5e7eb;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -347,7 +361,7 @@ def get_installation_instructions() -> str:
            ```bash
            ollama pull llama3
            ```
-        5. **Keep the terminal window open** while using the application
+        5. **Keep the terminal window open** while using this application
         """,
         
         'linux': """
@@ -508,11 +522,15 @@ def initialize_session_state():
         st.session_state.uploaded_resume = None
     if 'uploaded_cover_letter' not in st.session_state:
         st.session_state.uploaded_cover_letter = None
+    if 'resume_filename' not in st.session_state:
+        st.session_state.resume_filename = ''
+    if 'cover_letter_filename' not in st.session_state:
+        st.session_state.cover_letter_filename = ''
 
 def extract_text_from_pdf(pdf_file) -> str:
     """Extract text from PDF file"""
     try:
-        pdf_reader = PdfReader(pdf_file)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
         text = ""
         for page in pdf_reader.pages:
             text += page.extract_text()
@@ -524,7 +542,10 @@ def extract_text_from_pdf(pdf_file) -> str:
 def extract_text_from_docx(docx_file) -> str:
     """Extract text from DOCX file"""
     try:
-        text = python_docx2txt.process(docx_file)
+        doc = Document(docx_file)
+        text = ""
+        for paragraph in doc.paragraphs:
+            text += paragraph.text + "\n"
         return text
     except Exception as e:
         st.error(f"Error reading DOCX: {str(e)}")
@@ -533,128 +554,138 @@ def extract_text_from_docx(docx_file) -> str:
 def extract_text_from_txt(txt_file) -> str:
     """Extract text from TXT file"""
     try:
-        text = txt_file.read().decode('utf-8')
-        return text
+        return txt_file.read().decode('utf-8')
     except Exception as e:
         st.error(f"Error reading TXT: {str(e)}")
         return ""
 
 def parse_resume_text(text: str) -> Dict[str, Any]:
-    """Parse resume text into structured data using AI"""
-    prompt = f"""
-    Parse this resume text and extract the following information in JSON format:
-    
-    Resume Text:
-    {text}
-    
-    Extract and return JSON with these keys:
-    - name: Full name of the person
-    - title: Professional title or current position
-    - email: Email address
-    - phone: Phone number
-    - location: Location (City, State)
-    - summary: Professional summary or objective
-    - experience: Array of work experiences, each with title, company, duration, and description
-    - education: Array of education entries, each with degree, institution, year, and details
-    - skills: Array of technical and soft skills
-    - projects: Array of projects, each with name and description
-    - certifications: Array of certifications, each with name, issuer, and year
-    
-    If any information is not found, use empty strings or empty arrays.
-    """
-    
-    try:
-        response = generate_with_ollama(prompt, st.session_state.selected_model, temperature=0.2)
-        if response:
-            # Try to parse as JSON
-            try:
-                parsed_data = json.loads(response)
-                return parsed_data
-            except json.JSONDecodeError:
-                # If not valid JSON, return basic structure
-                return {
-                    'name': '',
-                    'title': '',
-                    'email': '',
-                    'phone': '',
-                    'location': '',
-                    'summary': text[:500],  # Use first 500 chars as summary
-                    'experience': [],
-                    'education': [],
-                    'skills': [],
-                    'projects': [],
-                    'certifications': []
-                }
-    except Exception as e:
-        st.error(f"Error parsing resume: {str(e)}")
-    
-    return {
+    """Parse resume text into structured data"""
+    # Initialize parsed data
+    parsed_data = {
         'name': '',
         'title': '',
         'email': '',
         'phone': '',
         'location': '',
-        'summary': text[:500],
+        'summary': '',
         'experience': [],
         'education': [],
         'skills': [],
         'projects': [],
         'certifications': []
     }
+    
+    lines = text.split('\n')
+    current_section = None
+    current_experience = {}
+    
+    # Extract email and phone using regex
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    phone_pattern = r'(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}'
+    
+    emails = re.findall(email_pattern, text)
+    phones = re.findall(phone_pattern, text)
+    
+    if emails:
+        parsed_data['email'] = emails[0]
+    if phones:
+        parsed_data['phone'] = phones[0].replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+    
+    # Simple parsing logic (can be enhanced with NLP)
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Detect sections
+        if any(keyword in line.lower() for keyword in ['experience', 'work', 'employment']):
+            current_section = 'experience'
+            if current_experience and current_experience.get('title'):
+                parsed_data['experience'].append(current_experience)
+                current_experience = {}
+        elif any(keyword in line.lower() for keyword in ['education', 'academic', 'university']):
+            current_section = 'education'
+        elif any(keyword in line.lower() for keyword in ['skills', 'technical', 'competencies']):
+            current_section = 'skills'
+        elif any(keyword in line.lower() for keyword in ['summary', 'objective', 'profile']):
+            current_section = 'summary'
+        elif any(keyword in line.lower() for keyword in ['projects', 'portfolio']):
+            current_section = 'projects'
+        elif any(keyword in line.lower() for keyword in ['certifications', 'certificates']):
+            current_section = 'certifications'
+        
+        # Extract information based on current section
+        if current_section == 'summary' and not parsed_data['summary']:
+            parsed_data['summary'] = line
+        elif current_section == 'skills':
+            # Extract skills from comma-separated lists or bullet points
+            skills = re.split(r'[,;•\n]', line)
+            for skill in skills:
+                skill = skill.strip()
+                if skill and len(skill) > 2:
+                    parsed_data['skills'].append(skill)
+        elif current_section == 'experience':
+            # Simple experience extraction (can be enhanced)
+            if not current_experience.get('title') and len(line) < 100:
+                # Likely a job title
+                current_experience['title'] = line
+            elif not current_experience.get('company') and '@' not in line and len(line) < 100:
+                # Likely a company name
+                current_experience['company'] = line
+            else:
+                # Description
+                current_experience['description'] = current_experience.get('description', '') + line + '\n'
+    
+    # Add last experience if exists
+    if current_experience and current_experience.get('title'):
+        parsed_data['experience'].append(current_experience)
+    
+    # Clean up skills
+    parsed_data['skills'] = list(set([skill.strip() for skill in parsed_data['skills'] if skill.strip()]))
+    
+    return parsed_data
 
 def parse_cover_letter_text(text: str) -> Dict[str, Any]:
-    """Parse cover letter text to extract key information"""
-    prompt = f"""
-    Analyze this cover letter and extract the following information in JSON format:
-    
-    Cover Letter Text:
-    {text}
-    
-    Extract and return JSON with these keys:
-    - company: Company name being addressed
-    - position: Position being applied for
-    - hiring_manager: Hiring manager name (if mentioned)
-    - company_address: Company address (if mentioned)
-    - content: Full cover letter content
-    - key_points: Array of main points or arguments made
-    - tone: Professional tone assessment (formal, semi-formal, casual)
-    - length: Word count and assessment of appropriateness
-    
-    If any information is not found, use empty strings or empty arrays.
-    """
-    
-    try:
-        response = generate_with_ollama(prompt, st.session_state.selected_model, temperature=0.2)
-        if response:
-            # Try to parse as JSON
-            try:
-                parsed_data = json.loads(response)
-                return parsed_data
-            except json.JSONDecodeError:
-                # If not valid JSON, return basic structure
-                return {
-                    'company': '',
-                    'position': '',
-                    'hiring_manager': '',
-                    'company_address': '',
-                    'content': text,
-                    'key_points': [],
-                    'tone': 'unknown',
-                    'length': {'word_count': len(text.split()), 'assessment': 'unknown'}
-                }
-    except Exception as e:
-        st.error(f"Error parsing cover letter: {str(e)}")
-    
-    return {
+    """Parse cover letter text into structured data"""
+    parsed_data = {
         'company': '',
         'position': '',
         'hiring_manager': '',
         'company_address': '',
-        'content': text,
-        'key_points': [],
-        'tone': 'unknown',
-        'length': {'word_count': len(text.split()), 'assessment': 'unknown'}
+        'content': text
     }
+    
+    lines = text.split('\n')
+    
+    # Extract company name (simple heuristic)
+    for line in lines:
+        if any(keyword in line.lower() for keyword in ['dear', 'to:', 'attention:']):
+            # Look for company name in the same or next line
+            if 'dear' in line.lower():
+                parts = line.split('dear')[-1].strip()
+                if parts and len(parts) < 50:
+                    parsed_data['hiring_manager'] = parts
+    
+    # Try to extract position from first paragraph
+    first_paragraph = ''
+    for line in lines:
+        if line.strip():
+            first_paragraph = line
+            break
+    
+    # Look for position keywords
+    position_keywords = ['position', 'role', 'job', 'opportunity']
+    for keyword in position_keywords:
+        if keyword in first_paragraph.lower():
+            # Extract the position (simple heuristic)
+            start = first_paragraph.lower().find(keyword)
+            if start != -1:
+                end = first_paragraph.find('.', start)
+                if end != -1:
+                    parsed_data['position'] = first_paragraph[start:end+1].strip()
+    
+    return parsed_data
 
 def generate_with_ollama(prompt: str, model_name: str = DEFAULT_MODEL, 
                         temperature: float = 0.7, max_tokens: int = 1000) -> Optional[str]:
@@ -781,6 +812,74 @@ def match_skills_with_job(user_skills: List[str], job_skills: List[str]) -> Dict
         "match_percentage": match_percentage,
         "suggestions": missing_skills[:5]  # Top 5 missing skills to suggest
     }
+
+def improve_uploaded_resume(resume_text: str, job_analysis: Optional[Dict] = None) -> Optional[str]:
+    """Improve uploaded resume using AI"""
+    job_specific_instructions = ""
+    if job_analysis and job_analysis.get("skills"):
+        job_specific_instructions = f"""
+        Optimize this resume for a position requiring these skills: {', '.join(job_analysis['skills'][:10])}.
+        Highlight experience and achievements that demonstrate these skills.
+        Use these keywords naturally throughout the resume: {', '.join(job_analysis['keywords'][:8])}.
+        """
+    
+    prompt = f"""
+    Improve and optimize this resume for better impact and ATS compatibility:
+    
+    {job_specific_instructions}
+    
+    Original Resume:
+    {resume_text}
+    
+    Instructions:
+    1. Enhance the professional summary to be more impactful
+    2. Improve bullet points to focus on achievements rather than responsibilities
+    3. Add quantifiable metrics where possible (e.g., "increased by 25%", "managed team of 5")
+    4. Use stronger action verbs (Led, Developed, Created, Implemented, etc.)
+    5. Ensure proper formatting for ATS systems
+    6. Optimize keyword density for relevant skills
+    7. Maintain professional tone and structure
+    8. Keep it concise but comprehensive
+    9. Ensure consistent formatting and style
+    10. Add any missing sections that would strengthen the resume
+    
+    Output the complete improved resume with clear section headers.
+    """
+    
+    return generate_with_ollama(prompt, st.session_state.selected_model, temperature=0.3)
+
+def improve_uploaded_cover_letter(cover_letter_text: str, job_description: str, company_info: Dict[str, str]) -> Optional[str]:
+    """Improve uploaded cover letter using AI"""
+    prompt = f"""
+    Improve and optimize this cover letter for better impact:
+    
+    Company Information:
+    Company: {company_info['company']}
+    Position: {company_info['position']}
+    Hiring Manager: {company_info['hiring_manager'] or 'Hiring Team'}
+    
+    Job Description:
+    {job_description}
+    
+    Original Cover Letter:
+    {cover_letter_text}
+    
+    Instructions:
+    1. Strengthen the opening to grab attention immediately
+    2. Better align the content with the job requirements
+    3. Add specific examples and achievements that match the role
+    4. Improve the flow and transitions between paragraphs
+    5. Add more enthusiasm and genuine interest in the company
+    6. Strengthen the closing with a clear call to action
+    7. Ensure proper business letter format
+    8. Make it more personalized and less generic
+    9. Optimize length to 300-400 words maximum
+    10. Check for and fix any grammar or style issues
+    
+    Output the complete improved cover letter.
+    """
+    
+    return generate_with_ollama(prompt, st.session_state.selected_model, temperature=0.4)
 
 def generate_resume_content(resume_data: Dict[str, Any], template_style: str = "modern", job_analysis: Optional[Dict] = None) -> Optional[str]:
     """Generate resume content using Ollama with job-specific optimization"""
@@ -1070,121 +1169,6 @@ def calculate_cover_letter_completion(cover_letter_data: Dict[str, Any]) -> int:
     
     return int(required_score + hiring_manager_score + address_score)
 
-def show_upload_section():
-    """Show file upload section for resumes and cover letters"""
-    st.markdown('<h2 class="section-header">📁 Upload Documents</h2>', unsafe_allow_html=True)
-    
-    # Create tabs for different upload options
-    upload_tab1, upload_tab2 = st.tabs(["📄 Upload Resume", "✉️ Upload Cover Letter"])
-    
-    with upload_tab1:
-        st.markdown("### Upload Your Resume")
-        st.markdown("Upload your existing resume to extract and edit your information")
-        
-        # File upload area
-        uploaded_file = st.file_uploader(
-            "Choose a resume file",
-            type=['pdf', 'docx', 'txt'],
-            key="resume_upload",
-            help="Supported formats: PDF, DOCX, TXT"
-        )
-        
-        if uploaded_file is not None:
-            # Display file info
-            st.markdown('<div class="file-info">', unsafe_allow_html=True)
-            st.markdown(f"**File Name:** {uploaded_file.name}")
-            st.markdown(f"**File Type:** {uploaded_file.type}")
-            st.markdown(f"**File Size:** {uploaded_file.size / 1024:.1f} KB")
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Extract text based on file type
-            with st.spinner("📄 Extracting text from your resume..."):
-                if uploaded_file.type == "application/pdf":
-                    extracted_text = extract_text_from_pdf(uploaded_file)
-                elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                    extracted_text = extract_text_from_docx(uploaded_file)
-                else:  # TXT file
-                    extracted_text = extract_text_from_txt(uploaded_file)
-            
-            if extracted_text:
-                st.session_state.uploaded_resume = extracted_text
-                
-                # Show extracted text preview
-                with st.expander("📋 Extracted Text Preview", expanded=True):
-                    st.markdown('<div class="extracted-content">', unsafe_allow_html=True)
-                    st.text(extracted_text[:2000] + "..." if len(extracted_text) > 2000 else extracted_text)
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                # Parse the resume
-                if st.button("🔍 Parse Resume Information", type="primary", use_container_width=True):
-                    with st.spinner("🤖 AI is parsing your resume..."):
-                        parsed_data = parse_resume_text(extracted_text)
-                        
-                        # Update session state with parsed data
-                        for key, value in parsed_data.items():
-                            if key in st.session_state.resume_data:
-                                st.session_state.resume_data[key] = value
-                        
-                        st.success("✅ Resume parsed successfully!")
-                        st.info("💡 Review the extracted information in the Resume Builder tab and make any necessary edits.")
-                        st.balloons()
-            else:
-                st.error("❌ Failed to extract text from the uploaded file. Please try a different file.")
-    
-    with upload_tab2:
-        st.markdown("### Upload Your Cover Letter")
-        st.markdown("Upload your existing cover letter to edit and improve it")
-        
-        # File upload area
-        uploaded_file = st.file_uploader(
-            "Choose a cover letter file",
-            type=['pdf', 'docx', 'txt'],
-            key="cover_letter_upload",
-            help="Supported formats: PDF, DOCX, TXT"
-        )
-        
-        if uploaded_file is not None:
-            # Display file info
-            st.markdown('<div class="file-info">', unsafe_allow_html=True)
-            st.markdown(f"**File Name:** {uploaded_file.name}")
-            st.markdown(f"**File Type:** {uploaded_file.type}")
-            st.markdown(f"**File Size:** {uploaded_file.size / 1024:.1f} KB")
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Extract text based on file type
-            with st.spinner("📄 Extracting text from your cover letter..."):
-                if uploaded_file.type == "application/pdf":
-                    extracted_text = extract_text_from_pdf(uploaded_file)
-                elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                    extracted_text = extract_text_from_docx(uploaded_file)
-                else:  # TXT file
-                    extracted_text = extract_text_from_txt(uploaded_file)
-            
-            if extracted_text:
-                st.session_state.uploaded_cover_letter = extracted_text
-                
-                # Show extracted text preview
-                with st.expander("📋 Extracted Text Preview", expanded=True):
-                    st.markdown('<div class="extracted-content">', unsafe_allow_html=True)
-                    st.text(extracted_text[:2000] + "..." if len(extracted_text) > 2000 else extracted_text)
-                    st.markdown('</div>', unsafe_allow_html=True)
-                
-                # Parse the cover letter
-                if st.button("🔍 Analyze Cover Letter", type="primary", use_container_width=True):
-                    with st.spinner("🤖 AI is analyzing your cover letter..."):
-                        parsed_data = parse_cover_letter_text(extracted_text)
-                        
-                        # Update session state with parsed data
-                        for key, value in parsed_data.items():
-                            if key in st.session_state.cover_letter_data:
-                                st.session_state.cover_letter_data[key] = value
-                        
-                        st.success("✅ Cover letter analyzed successfully!")
-                        st.info("💡 Review the extracted information in the Cover Letter Generator tab and make any necessary edits.")
-                        st.balloons()
-            else:
-                st.error("❌ Failed to extract text from the uploaded file. Please try a different file.")
-
 def show_ollama_setup_page():
     """Show the setup page when Ollama is not running or has no models"""
     st.markdown('<h2 class="section-header">🚀 Setup Required</h2>', unsafe_allow_html=True)
@@ -1351,12 +1335,9 @@ def show_main_application():
                         st.rerun()
     
     # Main tabs with progress indicators
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📁 Upload", "📝 Resume Builder", "✉️ Cover Letter", "🎨 Templates & Export", "📊 Analytics"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📝 Resume Builder", "✉️ Cover Letter", "📁 Upload & Edit", "🎨 Templates & Export", "📊 Analytics"])
     
     with tab1:
-        show_upload_section()
-    
-    with tab2:
         st.markdown('<h2 class="section-header">Resume Builder</h2>', unsafe_allow_html=True)
         
         # Progress indicator
@@ -1372,10 +1353,6 @@ def show_main_application():
             </div>
         </div>
         """, unsafe_allow_html=True)
-        
-        # Show uploaded resume info if available
-        if st.session_state.uploaded_resume:
-            st.info("📄 You have uploaded a resume. The information has been extracted and is available for editing below.")
         
         # Personal Information
         with st.expander("👤 Personal Information", expanded=True):
@@ -1665,7 +1642,7 @@ def show_main_application():
                             st.session_state.generated_resume = optimized_resume
                             st.success("✅ Resume optimized for ATS successfully!")
     
-    with tab3:
+    with tab2:
         st.markdown('<h2 class="section-header">Cover Letter Generator</h2>', unsafe_allow_html=True)
         
         # Progress indicator
@@ -1681,10 +1658,6 @@ def show_main_application():
             </div>
         </div>
         """, unsafe_allow_html=True)
-        
-        # Show uploaded cover letter info if available
-        if st.session_state.uploaded_cover_letter:
-            st.info("📄 You have uploaded a cover letter. The information has been extracted and is available for editing below.")
         
         # Company Information
         with st.expander("🏢 Company & Position Details", expanded=True):
@@ -1775,71 +1748,6 @@ Preferred Qualifications:
                         for question in st.session_state.job_analysis["cover_letter_questions"]:
                             st.markdown(f"- {question}")
         
-        # Cover Letter Content Editor
-        if st.session_state.uploaded_cover_letter:
-            with st.expander("✏️ Edit Cover Letter Content", expanded=True):
-                st.session_state.cover_letter_data['content'] = st.text_area(
-                    "Cover Letter Content",
-                    st.session_state.cover_letter_data['content'],
-                    height=300,
-                    help="Edit your cover letter content here. You can modify it directly or use AI to improve it."
-                )
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("✨ Improve with AI", use_container_width=True):
-                        if st.session_state.cover_letter_data['content']:
-                            with st.spinner("🤖 AI is improving your cover letter..."):
-                                prompt = f"""
-                                Improve this cover letter to make it more professional and compelling:
-                                
-                                {st.session_state.cover_letter_data['content']}
-                                
-                                Requirements:
-                                - Enhance the opening and closing paragraphs
-                                - Strengthen the connection between skills and job requirements
-                                - Add more specific examples and achievements
-                                - Improve professional tone and flow
-                                - Make it more concise and impactful
-                                - Ensure proper business letter format
-                                """
-                                improved_letter = generate_with_ollama(prompt, st.session_state.selected_model, temperature=0.3)
-                                if improved_letter:
-                                    st.session_state.cover_letter_data['content'] = improved_letter
-                                    st.success("✅ Cover letter improved successfully!")
-                        else:
-                            st.warning("⚠️ Please write or upload a cover letter first.")
-                
-                with col2:
-                    if st.button("🎯 Personalize for Job", use_container_width=True):
-                        if st.session_state.cover_letter_data['content'] and st.session_state.cover_letter_data['job_description']:
-                            with st.spinner("🎯 Personalizing your cover letter..."):
-                                prompt = f"""
-                                Personalize this cover letter for the specific job:
-                                
-                                Current Cover Letter:
-                                {st.session_state.cover_letter_data['content']}
-                                
-                                Job Description:
-                                {st.session_state.cover_letter_data['job_description']}
-                                
-                                Company: {st.session_state.cover_letter_data['company']}
-                                Position: {st.session_state.cover_letter_data['position']}
-                                
-                                Requirements:
-                                - Tailor content to match job requirements
-                                - Add specific references to the company
-                                - Highlight most relevant skills and experiences
-                                - Include enthusiasm for the role
-                                - Maintain professional tone
-                                """
-                                personalized_letter = generate_with_ollama(prompt, st.session_state.selected_model, temperature=0.4)
-                                if personalized_letter:
-                                    st.session_state.cover_letter_data['content'] = personalized_letter
-                                    st.success("✅ Cover letter personalized successfully!")
-                        else:
-                            st.warning("⚠️ Please provide cover letter content and job description.")
-        
         # Generate Cover Letter
         if st.button("✍️ Generate Cover Letter", type="primary", use_container_width=True):
             # Validate required fields
@@ -1923,6 +1831,218 @@ Preferred Qualifications:
                         if personalized_letter:
                             st.session_state.generated_cover_letter = personalized_letter
                             st.success("✅ Cover letter personalized successfully!")
+    
+    with tab3:
+        st.markdown('<h2 class="section-header">Upload & Edit Documents</h2>', unsafe_allow_html=True)
+        
+        # Resume Upload Section
+        st.markdown("### 📄 Upload Resume")
+        st.markdown("Upload your existing resume to improve and optimize it with AI")
+        
+        # File upload for resume
+        uploaded_resume_file = st.file_uploader(
+            "Choose a resume file",
+            type=['pdf', 'docx', 'txt'],
+            key="resume_upload",
+            help="Supported formats: PDF, DOCX, TXT"
+        )
+        
+        if uploaded_resume_file is not None:
+            # Display file info
+            st.markdown(f"""
+            <div class="file-info">
+                <strong>Uploaded File:</strong> {uploaded_resume_file.name}<br>
+                <strong>File Size:</strong> {uploaded_resume_file.size / 1024:.1f} KB<br>
+                <strong>File Type:</strong> {uploaded_resume_file.type}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Extract text based on file type
+            if uploaded_resume_file.type == "application/pdf":
+                resume_text = extract_text_from_pdf(uploaded_resume_file)
+            elif uploaded_resume_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                resume_text = extract_text_from_docx(uploaded_resume_file)
+            else:  # TXT file
+                resume_text = extract_text_from_txt(uploaded_resume_file)
+            
+            if resume_text:
+                st.session_state.uploaded_resume = resume_text
+                st.session_state.resume_filename = uploaded_resume_file.name
+                
+                # Parse the resume
+                parsed_resume = parse_resume_text(resume_text)
+                
+                # Update session state with parsed data
+                for key, value in parsed_resume.items():
+                    if key in st.session_state.resume_data and value:
+                        st.session_state.resume_data[key] = value
+                
+                st.success("✅ Resume uploaded and parsed successfully!")
+                
+                # Display parsed information
+                with st.expander("📊 Parsed Resume Information", expanded=True):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**Contact Information:**")
+                        st.markdown(f"- **Name:** {parsed_resume.get('name', 'Not found')}")
+                        st.markdown(f"- **Email:** {parsed_resume.get('email', 'Not found')}")
+                        st.markdown(f"- **Phone:** {parsed_resume.get('phone', 'Not found')}")
+                        st.markdown(f"- **Location:** {parsed_resume.get('location', 'Not found')}")
+                    
+                    with col2:
+                        st.markdown("**Summary:**")
+                        st.markdown(parsed_resume.get('summary', 'No summary found'))
+                    
+                    if parsed_resume.get('experience'):
+                        st.markdown("**Work Experience:**")
+                        for i, exp in enumerate(parsed_resume['experience'][:3]):  # Show first 3
+                            st.markdown(f"- **{exp.get('title', 'N/A')}** at {exp.get('company', 'N/A')}")
+                    
+                    if parsed_resume.get('skills'):
+                        st.markdown("**Skills:**")
+                        skills_str = ", ".join(parsed_resume['skills'][:10])  # Show first 10
+                        st.markdown(skills_str)
+                
+                # Show improvement options
+                st.markdown("---")
+                st.markdown("### 🚀 Improve Your Resume")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("✨ Improve with AI", type="primary", use_container_width=True):
+                        with st.spinner("🎯 Improving your resume with AI..."):
+                            improved_resume = improve_uploaded_resume(resume_text, st.session_state.job_analysis)
+                            if improved_resume:
+                                st.session_state.generated_resume = improved_resume
+                                save_to_history("resume", improved_resume, {"title": f"Improved {uploaded_resume_file.name}"})
+                                st.success("✅ Resume improved successfully!")
+                                st.balloons()
+                
+                with col2:
+                    if st.button("📋 Use as Template", use_container_width=True):
+                        st.success("✅ Resume data loaded as template!")
+                        st.info("💡 You can now edit the parsed information in the Resume Builder tab and generate a new resume.")
+                
+                # Show original text
+                with st.expander("📄 Original Resume Text", expanded=False):
+                    st.text_area("Original Content", resume_text, height=400)
+        
+        # Cover Letter Upload Section
+        st.markdown("---")
+        st.markdown("### ✉️ Upload Cover Letter")
+        st.markdown("Upload your existing cover letter to improve and personalize it")
+        
+        # File upload for cover letter
+        uploaded_cover_letter_file = st.file_uploader(
+            "Choose a cover letter file",
+            type=['pdf', 'docx', 'txt'],
+            key="cover_letter_upload",
+            help="Supported formats: PDF, DOCX, TXT"
+        )
+        
+        if uploaded_cover_letter_file is not None:
+            # Display file info
+            st.markdown(f"""
+            <div class="file-info">
+                <strong>Uploaded File:</strong> {uploaded_cover_letter_file.name}<br>
+                <strong>File Size:</strong> {uploaded_cover_letter_file.size / 1024:.1f} KB<br>
+                <strong>File Type:</strong> {uploaded_cover_letter_file.type}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Extract text based on file type
+            if uploaded_cover_letter_file.type == "application/pdf":
+                cover_letter_text = extract_text_from_pdf(uploaded_cover_letter_file)
+            elif uploaded_cover_letter_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                cover_letter_text = extract_text_from_docx(uploaded_cover_letter_file)
+            else:  # TXT file
+                cover_letter_text = extract_text_from_txt(uploaded_cover_letter_file)
+            
+            if cover_letter_text:
+                st.session_state.uploaded_cover_letter = cover_letter_text
+                st.session_state.cover_letter_filename = uploaded_cover_letter_file.name
+                
+                # Parse the cover letter
+                parsed_cover_letter = parse_cover_letter_text(cover_letter_text)
+                
+                # Update session state with parsed data
+                for key, value in parsed_cover_letter.items():
+                    if key in st.session_state.cover_letter_data and value:
+                        st.session_state.cover_letter_data[key] = value
+                
+                st.success("✅ Cover letter uploaded and parsed successfully!")
+                
+                # Display parsed information
+                with st.expander("📊 Parsed Cover Letter Information", expanded=True):
+                    st.markdown(f"- **Company:** {parsed_cover_letter.get('company', 'Not found')}")
+                    st.markdown(f"- **Position:** {parsed_cover_letter.get('position', 'Not found')}")
+                    st.markdown(f"- **Hiring Manager:** {parsed_cover_letter.get('hiring_manager', 'Not found')}")
+                
+                # Show improvement options
+                st.markdown("---")
+                st.markdown("### 🚀 Improve Your Cover Letter")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("✨ Improve with AI", type="primary", use_container_width=True):
+                        if not st.session_state.cover_letter_data['job_description']:
+                            st.warning("⚠️ Please paste the job description in the Cover Letter Generator tab first.")
+                        else:
+                            with st.spinner("🎯 Improving your cover letter with AI..."):
+                                improved_letter = improve_uploaded_cover_letter(
+                                    cover_letter_text,
+                                    st.session_state.cover_letter_data['job_description'],
+                                    st.session_state.cover_letter_data
+                                )
+                                if improved_letter:
+                                    st.session_state.generated_cover_letter = improved_letter
+                                    save_to_history("cover_letter", improved_letter, {"title": f"Improved {uploaded_cover_letter_file.name}"})
+                                    st.success("✅ Cover letter improved successfully!")
+                                    st.balloons()
+                
+                with col2:
+                    if st.button("📋 Use as Template", use_container_width=True):
+                        st.success("✅ Cover letter data loaded as template!")
+                        st.info("💡 You can now edit the information in the Cover Letter Generator tab and generate a new cover letter.")
+                
+                # Show original text
+                with st.expander("📄 Original Cover Letter Text", expanded=False):
+                    st.text_area("Original Content", cover_letter_text, height=400)
+        
+        # Document Comparison
+        if st.session_state.uploaded_resume and st.session_state.generated_resume:
+            st.markdown("---")
+            st.markdown("### 📊 Before & After Comparison")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown('<div class="comparison-box">', unsafe_allow_html=True)
+                st.markdown('<div class="comparison-title">Original Resume</div>', unsafe_allow_html=True)
+                st.text_area("Original", st.session_state.uploaded_resume[:1000] + "..." if len(st.session_state.uploaded_resume) > 1000 else st.session_state.uploaded_resume, height=400, disabled=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown('<div class="comparison-box">', unsafe_allow_html=True)
+                st.markdown('<div class="comparison-title">Improved Resume</div>', unsafe_allow_html=True)
+                st.text_area("Improved", st.session_state.generated_resume[:1000] + "..." if len(st.session_state.generated_resume) > 1000 else st.session_state.generated_resume, height=400, disabled=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+        
+        if st.session_state.uploaded_cover_letter and st.session_state.generated_cover_letter:
+            st.markdown("---")
+            st.markdown("### 📊 Cover Letter Comparison")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown('<div class="comparison-box">', unsafe_allow_html=True)
+                st.markdown('<div class="comparison-title">Original Cover Letter</div>', unsafe_allow_html=True)
+                st.text_area("Original", st.session_state.uploaded_cover_letter[:1000] + "..." if len(st.session_state.uploaded_cover_letter) > 1000 else st.session_state.uploaded_cover_letter, height=400, disabled=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown('<div class="comparison-box">', unsafe_allow_html=True)
+                st.markdown('<div class="comparison-title">Improved Cover Letter</div>', unsafe_allow_html=True)
+                st.text_area("Improved", st.session_state.generated_cover_letter[:1000] + "..." if len(st.session_state.generated_cover_letter) > 1000 else st.session_state.generated_cover_letter, height=400, disabled=True)
+                st.markdown('</div>', unsafe_allow_html=True)
     
     with tab4:
         st.markdown('<h2 class="section-header">Export & Templates</h2>', unsafe_allow_html=True)
@@ -2060,4 +2180,261 @@ Preferred Qualifications:
                     current_section = line[3:].strip()
                     sections[current_section] = 0
                 elif line.strip() and current_section in sections:
-                    sections[current_section] +=
+                    sections[current_section] += len(line.split())
+            
+            # Create visualization
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Word Count by Section**")
+                if sections:
+                    fig = px.pie(
+                        values=list(sections.values()),
+                        names=list(sections.keys()),
+                        title="Resume Word Distribution"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                st.markdown("**Resume Metrics**")
+                st.metric("Total Word Count", word_count)
+                st.metric("Number of Sections", len(sections))
+                
+                # Calculate average words per section
+                avg_words = sum(sections.values()) / len(sections) if sections else 0
+                st.metric("Avg. Words per Section", f"{avg_words:.1f}")
+                
+                # Estimate reading time
+                reading_time = max(1, word_count // 200)  # Average reading speed
+                st.metric("Est. Reading Time", f"{reading_time} min")
+            
+            # Skills analysis
+            if st.session_state.resume_data['skills']:
+                st.markdown("**Skills Analysis**")
+                skill_cols = st.columns(min(5, len(st.session_state.resume_data['skills'])))
+                for i, skill in enumerate(st.session_state.resume_data['skills']):
+                    with skill_cols[i % 5]:
+                        # Check if skill appears in resume
+                        skill_appearances = st.session_state.generated_resume.lower().count(skill.lower())
+                        highlight_class = "skill-tag highlight" if skill_appearances > 0 else "skill-tag"
+                        st.markdown(f'<span class="{highlight_class}">{skill}</span>', unsafe_allow_html=True)
+                        st.markdown(f"<small>{skill_appearances} mentions</small>", unsafe_allow_html=True)
+            
+            # ATS optimization score
+            st.markdown("**ATS Optimization Score**")
+            ats_score = 0
+            
+            # Check for action verbs
+            action_verbs = ["managed", "developed", "led", "created", "implemented", "achieved", "improved", "designed", "coordinated", "executed"]
+            action_verb_count = sum(st.session_state.generated_resume.lower().count(verb) for verb in action_verbs)
+            ats_score += min(25, action_verb_count * 2)
+            
+            # Check for quantifiable achievements
+            quant_patterns = [r'\d+%$', r'\d+\s*(year|years|month|months)', r'\$\d+', r'\d+\s*(person|people|team)']
+            quant_count = sum(len(re.findall(pattern, st.session_state.generated_resume, re.IGNORECASE)) for pattern in quant_patterns)
+            ats_score += min(25, quant_count * 5)
+            
+            # Check for proper formatting
+            if not re.search(r'[^\w\s\-.,;:!?()[\]{}"\'\/@#%&*+=<>~`|]', st.session_state.generated_resume):
+                ats_score += 25
+            
+            # Check for length
+            if 300 <= word_count <= 700:
+                ats_score += 25
+            
+            # Display ATS score
+            st.markdown(f"""
+            <div class="progress-container">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                    <span>ATS Optimization Score</span>
+                    <span>{ats_score}%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {ats_score}%; background-color: {'#22c55e' if ats_score >= 75 else '#f59e0b' if ats_score >= 50 else '#ef4444'};"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if ats_score < 75:
+                st.info("💡 **Improvement Tips:** Consider adding more quantifiable achievements and action verbs to improve your ATS score.")
+        else:
+            st.info("💡 Generate a resume first to see analytics.")
+        
+        # Cover Letter Analytics
+        st.markdown("### 📊 Cover Letter Analytics")
+        
+        if st.session_state.generated_cover_letter:
+            # Word count analysis
+            cover_letter_words = st.session_state.generated_cover_letter.split()
+            word_count = len(cover_letter_words)
+            
+            # Paragraph analysis
+            paragraphs = [p.strip() for p in st.session_state.generated_cover_letter.split('\n\n') if p.strip()]
+            
+            # Sentiment analysis (simplified)
+            positive_words = ["excited", "enthusiastic", "passionate", "eager", "interested", "thrilled", "delighted"]
+            positive_count = sum(st.session_state.generated_cover_letter.lower().count(word) for word in positive_words)
+            
+            # Create visualization
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Cover Letter Metrics**")
+                st.metric("Total Word Count", word_count)
+                st.metric("Number of Paragraphs", len(paragraphs))
+                
+                # Estimate reading time
+                reading_time = max(1, word_count // 200)  # Average reading speed
+                st.metric("Est. Reading Time", f"{reading_time} min")
+                
+                # Sentiment score
+                sentiment_score = min(100, positive_count * 10)
+                st.metric("Enthusiasm Score", f"{sentiment_score}%")
+            
+            with col2:
+                st.markdown("**Personalization Analysis**")
+                
+                # Check for company name mentions
+                company_mentions = st.session_state.generated_cover_letter.lower().count(st.session_state.cover_letter_data['company'].lower())
+                st.metric("Company Name Mentions", company_mentions)
+                
+                # Check for position title mentions
+                position_mentions = st.session_state.generated_cover_letter.lower().count(st.session_state.cover_letter_data['position'].lower())
+                st.metric("Position Title Mentions", position_mentions)
+                
+                # Check for personal pronouns
+                personal_pronouns = ["i", "my", "me", "i'm", "i've"]
+                personal_count = sum(st.session_state.generated_cover_letter.lower().count(pronoun) for pronoun in personal_pronouns)
+                st.metric("Personal Pronouns", personal_count)
+                
+                # Check for specific examples
+                example_indicators = ["for example", "such as", "specifically", "in particular", "instance"]
+                example_count = sum(st.session_state.generated_cover_letter.lower().count(indicator) for indicator in example_indicators)
+                st.metric("Specific Examples", example_count)
+            
+            # Cover letter quality score
+            quality_score = 0
+            
+            # Check for appropriate length
+            if 200 <= word_count <= 400:
+                quality_score += 25
+            
+            # Check for proper structure
+            if any(st.session_state.generated_cover_letter.lower().startswith(prefix) for prefix in ["dear", "hello", "greetings"]):
+                quality_score += 15
+            
+            if any(st.session_state.generated_cover_letter.lower().endswith(suffix) for suffix in ["sincerely", "regards", "thank you"]):
+                quality_score += 15
+            
+            # Check for personalization
+            if company_mentions >= 2:
+                quality_score += 20
+            
+            # Check for enthusiasm
+            if sentiment_score >= 50:
+                quality_score += 25
+            
+            # Display quality score
+            st.markdown(f"""
+            <div class="progress-container">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                    <span>Cover Letter Quality Score</span>
+                    <span>{quality_score}%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {quality_score}%; background-color: {'#22c55e' if quality_score >= 75 else '#f59e0b' if quality_score >= 50 else '#ef4444'};"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if quality_score < 75:
+                st.info("💡 **Improvement Tips:** Consider adding more personalization, enthusiasm, and specific examples to improve your cover letter quality.")
+        else:
+            st.info("💡 Generate a cover letter first to see analytics.")
+        
+        # Job Match Analysis
+        if st.session_state.job_analysis and st.session_state.resume_data['skills']:
+            st.markdown("### 🎯 Job Match Analysis")
+            
+            # Calculate skill match
+            job_skills = st.session_state.job_analysis.get('skills', [])
+            user_skills = st.session_state.resume_data['skills']
+            
+            skill_match_result = match_skills_with_job(user_skills, job_skills)
+            st.session_state.skill_match = skill_match_result
+            
+            # Display match percentage
+            st.markdown(f"""
+            <div class="progress-container">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                    <span>Skill Match Percentage</span>
+                    <span>{skill_match_result['match_percentage']:.1f}%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: {skill_match_result['match_percentage']}%; background-color: {'#22c55e' if skill_match_result['match_percentage'] >= 75 else '#f59e0b' if skill_match_result['match_percentage'] >= 50 else '#ef4444'};"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Display matched and missing skills
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Matched Skills:**")
+                for skill in skill_match_result['matched_skills']:
+                    st.markdown(f'<span class="skill-tag highlight">{skill}</span>', unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown("**Missing Skills:**")
+                for skill in skill_match_result['missing_skills']:
+                    st.markdown(f'<span class="skill-tag">{skill}</span>', unsafe_allow_html=True)
+            
+            # Suggestions for improvement
+            if skill_match_result['suggestions']:
+                st.markdown("**Skills to Consider Adding:**")
+                for skill in skill_match_result['suggestions']:
+                    st.markdown(f"- {skill}")
+                
+                if st.button("Add Suggested Skills to Resume"):
+                    for skill in skill_match_result['suggestions']:
+                        if skill not in st.session_state.resume_data['skills']:
+                            st.session_state.resume_data['skills'].append(skill)
+                    st.success("✅ Suggested skills added to your resume!")
+        else:
+            st.info("💡 Analyze a job description and add skills to your resume to see job match analysis.")
+
+def main():
+    """Main application function"""
+    st.markdown('<h1 class="main-header">💼 CareerCraft AI</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Professional Resume & Cover Letter Generator powered by Local AI</p>', unsafe_allow_html=True)
+    
+    # Initialize session state
+    initialize_session_state()
+    
+    # Check Ollama connection - do this first
+    if st.session_state.ollama_status == 'checking':
+        with st.spinner("🔍 Checking Ollama server status..."):
+            is_running, error_msg, models_data = check_ollama_connection()
+            
+            if is_running:
+                st.session_state.ollama_status = 'running'
+                st.session_state.models_data = models_data
+                st.session_state.connection_error = None
+                
+                # Verify models are available
+                has_models, model_error = verify_ollama_models(models_data)
+                if not has_models:
+                    st.session_state.ollama_status = 'no_models'
+                    st.session_state.connection_error = model_error
+            else:
+                st.session_state.ollama_status = 'not_running'
+                st.session_state.connection_error = error_msg
+    
+    # Handle different Ollama states
+    if st.session_state.ollama_status in ['not_running', 'no_models', 'checking']:
+        show_ollama_setup_page()
+    else:
+        show_main_application()
+
+if __name__ == "__main__":
+    main()
